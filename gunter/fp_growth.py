@@ -1,27 +1,23 @@
-# encoding: utf-8
-
-"""
-A Python implementation of the FP-growth algorithm.
-
-Basic usage of the module is very simple:
-
-    > from fp_growth import find_frequent_itemsets
-    > find_frequent_itemsets(transactions, minimum_support)
-"""
+# (c) 2014 Reid Johnson
+#
+# Modified from:
+# Eric Naeseth <eric@naeseth.com>
+# (https://github.com/enaeseth/python-fp-growth/blob/master/fp_growth.py)
+#
+# A Python implementation of the FP-growth algorithm.
 
 from collections import defaultdict, namedtuple
+#from itertools import imap
 
 __author__ = 'Eric Naeseth <eric@naeseth.com>'
 __copyright__ = 'Copyright © 2009 Eric Naeseth'
 __license__ = 'MIT License'
 
-def find_frequent_itemsets(transactions, minimum_support, include_support=False):
-    """
-    Find frequent itemsets in the given transactions using FP-growth. This
-    function returns a generator instead of an eagerly-populated list of items.
+def fpgrowth(dataset, min_support=0.5, include_support=True, verbose=False):
+    """Implements the FP-growth algorithm.
 
-    The `transactions` parameter can be any iterable of iterables of items.
-    `minimum_support` should be an integer specifying the minimum number of
+    The `dataset` parameter can be any iterable of iterables of items.
+    `min_support` should be an integer specifying the minimum number of
     occurrences of an itemset for it to be accepted.
 
     Each item must be hashable (i.e., it must be valid as a member of a
@@ -29,44 +25,124 @@ def find_frequent_itemsets(transactions, minimum_support, include_support=False)
 
     If `include_support` is true, yield (itemset, support) pairs instead of
     just the itemsets.
+
+    Parameters
+    ----------
+    dataset : list
+        The dataset (a list of transactions) from which to generate 
+        candidate itemsets.
+
+    min_support : float
+        The minimum support threshold. Defaults to 0.5.
+
+    include_support : bool
+        Include support in output (default=False).
+
+    References
+    ----------
+    .. [1] J. Han, J. Pei, Y. Yin, "Mining Frequent Patterns without Candidate 
+           Generation," 2000.
+
+    """
+
+    F = []
+    support_data = {}
+    for k,v in find_frequent_itemsets(dataset, min_support=min_support,
+                                      include_support=include_support, verbose=verbose):
+        F.append(frozenset(k))
+        support_data[frozenset(k)] = v
+
+    # Create one array with subarrays that hold all transactions of equal length.
+    def bucket_list(nested_list, sort=True):
+        bucket = defaultdict(list)
+        for sublist in nested_list:
+            bucket[len(sublist)].append(sublist)
+        return [v for k,v in sorted(bucket.items())] if sort else bucket.values()
+
+    F = bucket_list(F)
+    
+    return F, support_data
+
+def find_frequent_itemsets(dataset, min_support, include_support=False, verbose=False):
+    """
+    Find frequent itemsets in the given transactions using FP-growth. This
+    function returns a generator instead of an eagerly-populated list of items.
+
+    The `dataset` parameter can be any iterable of iterables of items.
+    `min_support` should be an integer specifying the minimum number of
+    occurrences of an itemset for it to be accepted.
+
+    Each item must be hashable (i.e., it must be valid as a member of a
+    dictionary or a set).
+
+    If `include_support` is true, yield (itemset, support) pairs instead of
+    just the itemsets.
+
+    Parameters
+    ----------
+    dataset : list
+        The dataset (a list of transactions) from which to generate 
+        candidate itemsets.
+
+    min_support : float
+        The minimum support threshold. Defaults to 0.5.
+
+    include_support : bool
+        Include support in output (default=False).
+
     """
     items = defaultdict(lambda: 0) # mapping from items to their supports
+    processed_transactions = []
 
     # Load the passed-in transactions and count the support that individual
     # items have.
-    for transaction in transactions:
+    for transaction in dataset:
+        processed = []
         for item in transaction:
             items[item] += 1
+            processed.append(item)
+        processed_transactions.append(processed)
 
     # Remove infrequent items from the item support dictionary.
-    items = dict((item, support) for item, support in items.iteritems()
-        if support >= minimum_support)
+    items = dict((item, support) for item, support in items.items()
+        if support >= min_support)
 
     # Build our FP-tree. Before any transactions can be added to the tree, they
     # must be stripped of infrequent items and their surviving items must be
     # sorted in decreasing order of frequency.
     def clean_transaction(transaction):
-        transaction = filter(lambda v: v in items, transaction)
+        #transaction = filter(lambda v: v in items, transaction)
         transaction.sort(key=lambda v: items[v], reverse=True)
         return transaction
 
     master = FPTree()
-    for transaction in map(clean_transaction, transactions):
+    for transaction in map(clean_transaction, processed_transactions):
         master.add(transaction)
 
+    support_data = {}
     def find_with_suffix(tree, suffix):
         for item, nodes in tree.items():
-            support = sum(n.count for n in nodes)
-            if support >= minimum_support and item not in suffix:
+            support = float(sum(n.count for n in nodes)) / len(dataset)
+            if support >= min_support and item not in suffix:
                 # New winner!
                 found_set = [item] + suffix
+                support_data[frozenset(found_set)] = support
                 yield (found_set, support) if include_support else found_set
 
                 # Build a conditional tree and recursively search for frequent
                 # itemsets within it.
-                cond_tree = conditional_tree_from_paths(tree.prefix_paths(item))
+                cond_tree = conditional_tree_from_paths(tree.prefix_paths(item),
+                    min_support)
                 for s in find_with_suffix(cond_tree, found_set):
                     yield s # pass along the good news to our caller
+
+    if verbose:
+        # Print a list of all the frequent itemsets.
+        for itemset, support in find_with_suffix(master, []):
+            print(""                 + "{"                 + \
+                  "".join(str(i) + ", " for i in iter(itemset)).rstrip(', ')                 \
+                  + "}"                 + ":  sup = " + \
+                  str(round(support_data[frozenset(itemset)], 3)))
 
     # Search for frequent itemsets, and yield the results we find.
     for itemset in find_with_suffix(master, []):
@@ -76,8 +152,8 @@ class FPTree(object):
     """
     An FP tree.
 
-    This object may only store transaction items that are hashable
-    (i.e., all items must be valid as dictionary keys or set members).
+    This object may only store transaction items that are hashable (i.e., all
+    items must be valid as dictionary keys or set members).
     """
 
     Route = namedtuple('Route', 'head tail')
@@ -96,7 +172,10 @@ class FPTree(object):
         return self._root
 
     def add(self, transaction):
-        """Add a transaction to the tree."""
+        """
+        Adds a transaction to the tree.
+        """
+
         point = self._root
 
         for item in transaction:
@@ -135,12 +214,13 @@ class FPTree(object):
         element of the tuple is the item itself, and the second element is a
         generator that will yield the nodes in the tree that belong to the item.
         """
-        for item in self._routes.iterkeys():
+        for item in self._routes.keys():
             yield (item, self.nodes(item))
 
+            
     def nodes(self, item):
         """
-        Generate the sequence of nodes that contain the given item.
+        Generates the sequence of nodes that contain the given item.
         """
 
         try:
@@ -153,7 +233,7 @@ class FPTree(object):
             node = node.neighbor
 
     def prefix_paths(self, item):
-        """Generate the prefix paths that end with the given item."""
+        """Generates the prefix paths that end with the given item."""
 
         def collect_path(node):
             path = []
@@ -166,18 +246,36 @@ class FPTree(object):
         return (collect_path(node) for node in self.nodes(item))
 
     def inspect(self):
-        print('Tree:')
+        print("Tree:")
         self.root.inspect(1)
 
-        print("\n")
-        print('Routes:')
+        print("")
+        print("Routes:")
         for item, nodes in self.items():
-            print('  {}').format(item)
+            print("  %r" % item)
             for node in nodes:
-                print('    {}').format(node)
+                print("    %r" % node)
 
-def conditional_tree_from_paths(paths):
-    """Build a conditional FP-tree from the given prefix paths."""
+    def _removed(self, node):
+        """Called when `node` is removed from the tree; performs cleanup."""
+
+        head, tail = self._routes[node.item]
+        if node is head:
+            if node is tail or not node.neighbor:
+                # It was the sole node.
+                del self._routes[node.item]
+            else:
+                self._routes[node.item] = self.Route(node.neighbor, tail)
+        else:
+            for n in self.nodes(node.item):
+                if n.neighbor is node:
+                    n.neighbor = node.neighbor # skip over
+                    if node is tail:
+                        self._routes[node.item] = self.Route(head, n)
+                    break
+
+def conditional_tree_from_paths(paths, min_support):
+    """Builds a conditional FP-tree from the given prefix paths."""
     tree = FPTree()
     condition_item = None
     items = set()
@@ -209,6 +307,21 @@ def conditional_tree_from_paths(paths):
         for node in reversed(path[:-1]):
             node._count += count
 
+    # Eliminate the nodes for any items that are no longer frequent.
+    for item in items:
+        support = sum(n.count for n in tree.nodes(item))
+        if support < min_support:
+            # Doesn't make the cut anymore
+            for node in tree.nodes(item):
+                if node.parent is not None:
+                    node.parent.remove(node)
+
+    # Finally, remove the nodes corresponding to the item for which this
+    # conditional tree was generated.
+    for node in tree.nodes(condition_item):
+        if node.parent is not None: # the node might already be an orphan
+            node.parent.remove(node)
+
     return tree
 
 class FPNode(object):
@@ -223,7 +336,7 @@ class FPNode(object):
         self._neighbor = None
 
     def add(self, child):
-        """Add the given FPNode `child` as a child of this node."""
+        """Adds the given FPNode `child` as a child of this node."""
 
         if not isinstance(child, FPNode):
             raise TypeError("Can only add other FPNodes as children")
@@ -234,13 +347,36 @@ class FPNode(object):
 
     def search(self, item):
         """
-        Check whether this node contains a child node for the given item.
+        Checks to see if this node contains a child node for the given item.
         If so, that node is returned; otherwise, `None` is returned.
         """
+
         try:
             return self._children[item]
         except KeyError:
             return None
+
+    def remove(self, child):
+        try:
+            if self._children[child.item] is child:
+                del self._children[child.item]
+                child.parent = None
+                self._tree._removed(child)
+                for sub_child in child.children:
+                    try:
+                        # Merger case: we already have a child for that item, so
+                        # add the sub-child's count to our child's count.
+                        self._children[sub_child.item]._count += sub_child.count
+                        sub_child.parent = None # it's an orphan now
+                    except KeyError:
+                        # Turns out we don't actually have a child, so just add
+                        # the sub-child as our own child.
+                        self.add(sub_child)
+                child._children = {}
+            else:
+                raise ValueError("that node is not a child of this node")
+        except KeyError:
+            raise ValueError("that node is not a child of this node")
 
     def __contains__(self, item):
         return item in self._children
@@ -261,7 +397,7 @@ class FPNode(object):
         return self._count
 
     def increment(self):
-        """Increment the count associated with this node's item."""
+        """Increments the count associated with this node's item."""
         if self._count is None:
             raise ValueError("Root nodes have no associated count.")
         self._count += 1
@@ -276,42 +412,42 @@ class FPNode(object):
         """True if this node is a leaf in the tree; false if otherwise."""
         return len(self._children) == 0
 
-    @property
-    def parent(self):
-        """The node's parent"""
-        return self._parent
+    def parent():
+        doc = "The node's parent."
+        def fget(self):
+            return self._parent
+        def fset(self, value):
+            if value is not None and not isinstance(value, FPNode):
+                raise TypeError("A node must have an FPNode as a parent.")
+            if value and value.tree is not self.tree:
+                raise ValueError("Cannot have a parent from another tree.")
+            self._parent = value
+        return locals()
+    parent = property(**parent())
 
-    @parent.setter
-    def parent(self, value):
-        if value is not None and not isinstance(value, FPNode):
-            raise TypeError("A node must have an FPNode as a parent.")
-        if value and value.tree is not self.tree:
-            raise ValueError("Cannot have a parent from another tree.")
-        self._parent = value
-
-    @property
-    def neighbor(self):
-        """
+    def neighbor():
+        doc = """
         The node's neighbor; the one with the same value that is "to the right"
         of it in the tree.
         """
-        return self._neighbor
-
-    @neighbor.setter
-    def neighbor(self, value):
-        if value is not None and not isinstance(value, FPNode):
-            raise TypeError("A node must have an FPNode as a neighbor.")
-        if value and value.tree is not self.tree:
-            raise ValueError("Cannot have a neighbor from another tree.")
-        self._neighbor = value
+        def fget(self):
+            return self._neighbor
+        def fset(self, value):
+            if value is not None and not isinstance(value, FPNode):
+                raise TypeError("A node must have an FPNode as a neighbor.")
+            if value and value.tree is not self.tree:
+                raise ValueError("Cannot have a neighbor from another tree.")
+            self._neighbor = value
+        return locals()
+    neighbor = property(**neighbor())
 
     @property
     def children(self):
         """The nodes that are children of this node."""
-        return tuple(self._children.itervalues())
-
+        return tuple(self._children.values())
+        
     def inspect(self, depth=0):
-        print('  ' * depth) + repr(self)
+        print(('  ' * depth) + repr(self))
         for child in self.children:
             child.inspect(depth + 1)
 
@@ -320,38 +456,123 @@ class FPNode(object):
             return "<%s (root)>" % type(self).__name__
         return "<%s %r (%r)>" % (type(self).__name__, self.item, self.count)
 
+def rules_from_conseq(freq_set, H, support_data, rules, min_confidence=0.5, verbose=False):
+    """Generates a set of candidate rules.
 
-if __name__ == '__main__':
-    from optparse import OptionParser
-    import csv
+    Parameters
+    ----------
+    freq_set : frozenset
+        The complete list of frequent itemsets.
 
-    p = OptionParser(usage='%prog data_file')
-    p.add_option('-s', '--minimum-support', dest='minsup', type='int',
-        help='Minimum itemset support (default: 2)')
-    p.add_option('-n', '--numeric', dest='numeric', action='store_true',
-        help='Convert the values in datasets to numerals (default: false)')
-    p.set_defaults(minsup=2)
-    p.set_defaults(numeric=False)
+    H : list
+        A list of frequent itemsets (of a particular length).
 
-    options, args = p.parse_args()
-    if len(args) < 1:
-        p.error('must provide the path to a CSV file to read')
+    support_data : dict
+        The support data for all candidate itemsets.
 
-    transactions = []
-    with open(args[0]) as database:
-        for row in csv.reader(database):
-            if options.numeric:
-                transaction = []
-                for item in row:
-                    transaction.append(long(item))
-                transactions.append(transaction)
+    rules : list
+        A potentially incomplete set of candidate rules above the minimum 
+        confidence threshold.
+
+    min_confidence : float
+        The minimum confidence threshold. Defaults to 0.5.
+    """
+    m = len(H[0])
+    if m == 1:
+        Hmp1 = calc_confidence(freq_set, H, support_data, rules, min_confidence, verbose)
+    if (len(freq_set) > (m+1)):
+        Hmp1 = apriori_gen(H, m+1) # generate candidate itemsets
+        Hmp1 = calc_confidence(freq_set, Hmp1,  support_data, rules, min_confidence, verbose)
+        if len(Hmp1) > 1:
+            # If there are candidate rules above the minimum confidence 
+            # threshold, recurse on the list of these candidate rules.
+            rules_from_conseq(freq_set, Hmp1, support_data, rules, min_confidence, verbose)
+
+def calc_confidence(freq_set, H, support_data, rules, min_confidence=0.5, verbose=False):
+    """Evaluates the generated rules.
+
+    One measurement for quantifying the goodness of association rules is 
+    confidence. The confidence for a rule 'P implies H' (P -> H) is defined as 
+    the support for P and H divided by the support for P 
+    (support (P|H) / support(P)), where the | symbol denotes the set union 
+    (thus P|H means all the items in set P or in set H).
+
+    To calculate the confidence, we iterate through the frequent itemsets and 
+    associated support data. For each frequent itemset, we divide the support 
+    of the itemset by the support of the antecedent (left-hand-side of the 
+    rule).
+
+    Parameters
+    ----------
+    freq_set : frozenset
+        The complete list of frequent itemsets.
+
+    H : list
+        A list of frequent itemsets (of a particular length).
+
+    min_support : float
+        The minimum support threshold.
+
+    rules : list
+        A potentially incomplete set of candidate rules above the minimum 
+        confidence threshold.
+
+    min_confidence : float
+        The minimum confidence threshold. Defaults to 0.5.
+
+    Returns
+    -------
+    pruned_H : list
+        The list of candidate rules above the minimum confidence threshold.
+    """
+    pruned_H = [] # list of candidate rules above the minimum confidence threshold
+    for conseq in H: # iterate over the frequent itemsets
+        conf = support_data[freq_set] / support_data[freq_set - conseq]
+        if conf >= min_confidence:
+            rules.append((freq_set - conseq, conseq, conf))
+            pruned_H.append(conseq)
+
+            if verbose:
+                print(""                     + "{"                    \
+                      + "".join([str(i) + ", " for i in iter(freq_set-conseq)]).rstrip(', ') \
+                      + "}"                     + " ---> "                     + "{"  \
+                      + "".join([str(i) + ", " for i in iter(conseq)]).rstrip(', ')  \
+                      + "}"                     + ":  conf = " + str(round(conf, 3)) \
+                      + ", sup = " + str(round(support_data[freq_set], 3)))
+
+    return pruned_H
+
+def generate_rules(F, support_data, min_confidence=0.5, verbose=True):
+    """Generates a set of candidate rules from a list of frequent itemsets.
+
+    For each frequent itemset, we calculate the confidence of using a
+    particular item as the rule consequent (right-hand-side of the rule). By 
+    testing and merging the remaining rules, we recursively create a list of 
+    pruned rules.
+
+    Parameters
+    ----------
+    F : list
+        A list of frequent itemsets.
+
+    support_data : dict
+        The corresponding support data for the frequent itemsets (L).
+
+    min_confidence : float
+        The minimum confidence threshold. Defaults to 0.5.
+
+    Returns
+    -------
+    rules : list
+        The list of candidate rules above the minimum confidence threshold.
+    """
+    rules = []
+    for i in range(1, len(F)):
+        for freq_set in F[i]:
+            H1 = [frozenset([item]) for item in freq_set]
+            if (i > 1):
+                rules_from_conseq(freq_set, H1, support_data, rules, min_confidence, verbose)
             else:
-                transactions.append(row)
+                calc_confidence(freq_set, H1, support_data, rules, min_confidence, verbose)
 
-    result = []
-    for itemset, support in find_frequent_itemsets(transactions, options.minsup, True):
-        result.append((itemset,support))
-
-    result = sorted(result, key=lambda i: i[0])
-    for itemset, support in result:
-        print(str(itemset) + ' ' + str(support))
+    return rules
