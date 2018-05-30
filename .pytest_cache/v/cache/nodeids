@@ -1,6 +1,0 @@
-[
-  "tests/test_apriori.py::TestApriori::test_apriori_association_rules",
-  "tests/test_apriori.py::TestApriori::test_candidate1_itemsets",
-  "tests/test_apriori.py::TestApriori::test_generate_all_frequent_itemsets",
-  "tests/test_apriori.py::TestApriori::test_support_prune"
-]
