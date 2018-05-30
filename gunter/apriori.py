@@ -1,3 +1,5 @@
+# 2018 Tyler Brown (ported to Python 3)
+#
 # (c) 2016 Everaldo Aguiar & Reid Johnson
 #
 # Modified from:
